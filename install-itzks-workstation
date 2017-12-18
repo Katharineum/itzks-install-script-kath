@@ -1,0 +1,135 @@
+#!/bin/bash
+# Script zur Installation einer ITZKS-Workstation (z.B. Notebooks am Katharineum)
+
+# Add user locadm as "local adminstrator" and add this user to sudoer-group
+adduser --gecos "Local Administrator" locadm
+adduser locadm sudo
+
+# Enlarge root-fs
+lvextend -L 20G /dev/vg_system/root
+resize2fs /dev/vg_system/root
+
+# Retrieve LDAP CA certificate
+invoke-rc.d fetch-ldap-cert start
+
+# Add itzks-package repo
+touch /etc/apt/sources.list.d/itzks.list
+echo "deb http://packages.it-zukunft-schule.de/debian jessie main contrib non-free" >> /etc/apt/sources-list.d/itzks.list
+echo "deb http://packages.it-zukunft-schule.de/debian jessie-backports main contrib non-free" >> /etc/apt/sources-list.d/itzks.listapt-get update
+
+# Get update and add itzks-keyring and itzks-systems-common package
+apt-get update
+apt-get install itzks-keyring && apt-get update && apt-get install itzks-systems-common
+
+# Get update and install keyring packages
+apt-get update
+apt-get install x2go-keyring deb-multimedia-keyring && apt-get update
+
+# Install the itzks-systems-workstation package
+itzks-systems.do_preseed
+apt-get install itzks-systems-workstation
+
+# Make sure kdm is the selected display manager
+dpkg-reconfigure kdm
+
+# Install libdvdcss2 if needed
+while true; do
+    read -p "Verfügt der Rechner über ein DVD-Laufwerk bzw. sollen DVDs abgespielt werden können? [j/n] " yn
+    case $yn in
+        [Jj]* ) apt install libdvdcss2; break;;
+        [Nn]* ) exit;;
+        * ) echo "Bitte antworte mit Ja oder Nein.";;
+    esac
+done
+
+# FIXME: Probably not needed - should be fixed in debian-edu config
+#apt-get install libnss-mdns
+
+####################
+
+# FIXME: this should be scripted; manage with puppet instead
+read -p '''!   Änderung in Network-Interfaces
+Ändere die bestehenden Einträge für eth0 auf
+   allow-hotplug eth0
+   #NetworkManager
+   #iface eth0 inet dhcp
+Starte nun den Editor mit [Enter]
+'''
+editor /etc/network/interfaces
+
+####################
+
+# FIXME: this should be scripted; manage with puppet instead
+read -p '''!   Änderung in NFS-Common
+Ändere die Datei /etc/default/nfs-common am Ende:
+   NEED_GSSD= (leer lassen)
+Starte nun den Editor mit [Enter]
+'''
+editor /etc/default/nfs-common
+
+###################
+
+# FIXME: remove soon; is managed by normal install of itzks-systems-workstation package
+#echo '!   Java installieren...'
+#apt-get install oracle-java8-bin oracle-java8-jre oracle-java8-plugin
+#update-java-alternatives --jre --set java-8-oracle
+#update-java-alternatives --plugin --set java-8-oracle
+
+###################
+
+# Disable update-notifications
+# FIXME: Add conflict to itzks-systems-common
+apt-get autoremove --purge gnome-packagekit
+
+###################
+
+# switch to systemd-networkd with managed wlan0 interface
+itzks-switch-to-systemd-networkd
+
+####################
+
+# Add system-wide WiFi-config
+echo '!   WIFI-Netzwerk hinzufügen'
+read -p 'Wie lautet die SSID? ' ssid
+read -p 'Wie lautet das zugehörige Passwort? ' passw
+export WIFIDEV=wlan0
+wpa_passphrase $ssid $passw >> /etc/wpa_supplicant/wpa_supplicant-$WIFIDEV.conf
+
+####################
+
+# Install puppet-agent
+echo '!   Puppet-Agent installieren'
+read -p '''Bevor der Puppet-Agent installiert werden kann,
+muss der Hostname geändert werden. Es darf kein "lan" im
+Namen auftauchen, z.B. statt mw101-lan.intern muss
+es mw101.intern heißen. [ENTER] '''
+
+# Set hostname
+read -p 'Wie lautet der Hostname (ohne Domain)? ' myhost
+hostnamectl set-hostname $myhost
+
+# To be sure restart the following services
+invoke-rc.d rsyslog restart
+invoke-rc.d cron restart
+invoke-rc.d puppet restart
+
+# Install and enable puppet-agent on client
+echo '!   Puppet-Agent wird installiert... '
+apt-get install puppet
+puppet agent --test
+puppet agent --enable
+read -p '''Nun mit ssh auf den tjener wechseln und dort
+mit   puppet cert --list   die am Master angemeldeten
+Clients auflisten.
+
+Anschließend mit   puppet cert --sign <myhost>.intern
+den Puppet-Agent des Clients authorisieren. [ENTER] '''
+ssh tjener
+echo '''!   FERTIG
+Die Installation 
+  - des Basissystems mit ITZKS-Anpassungen
+  - der Umstellung auf systemd-networkd
+  - des Puppet-Agents
+ist abgeschlossen.'''
+
+
